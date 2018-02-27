@@ -1,0 +1,132 @@
+---
+title: "Practical Machine Learning - Prediction Assignment"
+author: "Don Johnson"
+date: "2/24/2018"
+output: html_document
+---
+
+## Predicting the Quality of a Barbell Lift from Personal Activity Device Data
+
+## Introduction
+Personal activity devices such as Jawbone Up, Nike FuelBand, and Fitbit make it possible to collect a large amount of data which is then used to provide feedback and monitor progress towards fitness goals. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. Human Activity Recognition (HAR) is a key research area where the data from these devices is used to identify the type of activity being performed. There is an effort in HAR research community to use device data to further classify activities as those done with proper form and those done with poor form. The hope is for the devices to function like a coach, that is, using feedback on the *quality* of the excercise to improve progress and lower injury rates. In this project, we use device data to identify excercises performed with good form and poor form. The goal is to build a predictive model and use it to identify common types of excercise form mistakes. 
+
+The data comes from a study by Velloso, et al. where the researchers collected device data from 4 different devices while participants performed unilateral dumbell bicep curls 5 ways. The data can be found [here](http://groupware.les.inf.puc-rio.br/har#dataset) and the paper can be accessed [here](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf). The excercise classifications are as follows: 
+
+<center>
+| Classification | Description of Form |
+|:---:|:--- | 
+| A | Correct Form |
+| B | Throw Elbows Forward | 
+| C | Lift Dumbells Halfway | 
+| D | Lowering Dumbell Halfway | 
+| E | Throw Hips Forward |
+</center>
+
+We approach this problem as follows. First we will analyze the data and determine which features are important for classification. Next we will construct a model. The model(s) will be cross-validated and improved. The model will be tested with error rates reported. Finally, we will discuss possible improvements to the model.
+
+```{r setup, include=TRUE, echo=TRUE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(caret)
+library(randomForest)
+seed <- 18901
+```
+
+## Get the Data
+
+There are two datasets with this project: pml-training and pml-testing. The "testing" dataset functions like a quiz and is only used as a test of the final model. We will have to partition the pml-training dataset into a true "training" and "testing" subset.
+
+```{r download_data, cache=TRUE}
+trainURL = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+setwd("~/data/coursera/projects/ML/")
+download.file(url = trainURL, destfile = "./pml-training.csv")
+download.file(url = testURL, destfile = "./pml-testing.csv")
+
+pml_DF <- read.csv(file = "pml-training.csv")
+quizDF <- read.csv(file = "pml-testing.csv")
+```
+
+Description of the data classes from the paper: 
+
+> "Participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fash- ions: exactly according to the specification (Class A), throw- ing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes."
+
+## Clean the Data
+
+There are many NA values in the data set. We will remove any column that has NA values. Additionally, the first several columns contain non-numeric data such as user_name and arbitrary data such as the time the experiment was conducted. This data should not be used in our predictions.
+
+```{r CLEAN, cache=TRUE}
+usefulFeatures <- (colSums(is.na(pml_DF)) == 0)
+quizFeatures <- (colSums(is.na(quizDF)) == 0)
+features <- names(pml_DF[,usefulFeatures & quizFeatures])
+# the first seven features are unrelated to the prediction
+# such as the timestamp for the experiment
+features <- features[8:60]
+projectData <- pml_DF[,features]
+quiz_data <- quizDF[,c(features[-53], "problem_id")]
+```
+
+## Partition the Data
+
+The quiz dataset consisting of 20 values. As mentioned above, this is the problem set for the second part of the assignment. Therefore, we still need to partition the "projectData" into a training set and a testing set. 
+
+```{r partition, cache=TRUE}
+set.seed(seed)
+inTrain <- createDataPartition(y=projectData$classe, p = 0.6, list = FALSE)
+training <- projectData[inTrain,]; testing <- projectData[-inTrain,]
+```
+
+## Building the Models: Recursive Partitioning
+
+Since our end result is a classification prediction, we will first consider decision trees. Afterwards, we will try two more robust methods: random forests and boosting methods. Cross-validation is done within these models. 
+
+```{r model1, cache=TRUE}
+set.seed(seed)
+Model1_RPart <- train(classe~., method = "rpart", data = training)
+```
+
+A quick view of the decision tree shows roll_belt, pitch_forearm, magnet_dumbbell, and roll_forearm to be important variables: 
+
+```{r}
+plot(Model1_RPart$finalModel, margin = c(.1,.1,.1,.1))
+text(Model1_RPart$finalModel, cex = .7)
+
+pred_RPart <- predict(Model1_RPart, testing)
+confusionMatrix(pred_RPart, testing$classe)$overall[1]
+```
+
+We predict on our test set. Unfortunately, the accuracy is poor, just around 50%. We now try random forest and boosting. 
+
+### Improved Models and Cross-validation
+
+```{r mod2and3, cache=TRUE}
+set.seed(seed)
+#we use nTrees = 25 to speed up the fit
+Model2_RF <- randomForest(classe~., data = training, nTrees = 25)
+Model3_GBM <- train(classe~., method = "gbm", data = training, verbose = FALSE)
+
+pred_GBM <- predict(Model3_GBM, testing)
+confusionMatrix(pred_GBM, testing$classe)$overall[1]
+
+pred_RF <- predict(Model2_RF, testing)
+confusionMatrix(pred_RF, testing$classe)
+```
+
+Both methods give very good accuracy with random forest accuracy = 99.38%. Using the 95% confidence interval, we can expect the out of sample error rate to be less than 0.009. The tuning parameters for the GBM method could be adjusted to yield an improved model, but it takes a long time to fit and the random forest does quite well. 
+
+Since Model3_RF performed best, the random forest method will be chosen for the quiz, but first, we should refit the model using the entired project data, *i.e.*, using both the training & testing datasets. 
+
+```{r refit, cache=TRUE}
+set.seed(seed)
+#more trees for a better fit
+modFit <- randomForest(classe~.,data = projectData, nTrees = 100)
+modFit$confusion
+pred_quiz <- predict(modFit, quiz_data)
+pred_quiz
+```
+
+## Conclusion and Model Improvements
+
+The random forest model performed very well, as expected for this type of problem. In addition to models 2 & 3, other boosting methods could be used and combined to produced a stacked model. However, there is not much room for improvement over the 99.4% accuracy of the random forest model. The confusion matrix of Model2 shows the highest error rates for classe C and D which correspond to raising the barbell halfway and lowering the barbell halfway, respectively. Further improvements could be made by looking at better ways to differentiate these actions, perhaps by computing new variables from the given data. 
+
+
